@@ -1,0 +1,218 @@
+import pandas as pd
+
+event_file = "data/processed/strict_exon_skipping_events.tsv"
+junction_file = "data/processed/splice_junctions.tsv"
+
+output_file = (
+    "data/processed/exon_skipping_event_junctions.tsv"
+)
+
+print("Reading files...")
+
+events = pd.read_csv(
+    event_file,
+    sep="\t"
+)
+
+junctions = pd.read_csv(
+    junction_file,
+    sep="\t",
+    usecols=[
+        "gene_id",
+        "transcript_id",
+        "chromosome",
+        "strand",
+        "donor",
+        "acceptor"
+    ]
+)
+
+# --------------------------------------------------
+# Remove duplicate transcript-pair representations
+# --------------------------------------------------
+
+events = events.drop_duplicates()
+
+print("Events:", len(events))
+
+
+# --------------------------------------------------
+# Create fast junction lookup
+# --------------------------------------------------
+
+junction_lookup = {}
+
+for row in junctions.itertuples(index=False):
+
+    key = (
+        row.transcript_id,
+        int(row.donor),
+        int(row.acceptor)
+    )
+
+    junction_lookup[key] = {
+        "chromosome": row.chromosome,
+        "strand": row.strand
+    }
+
+
+# --------------------------------------------------
+# Build event-junction table
+# --------------------------------------------------
+
+records = []
+
+for event_id, row in events.iterrows():
+
+    gene_id = row["gene_id"]
+
+    tx_included = row["transcript_with_exon"]
+    tx_skipping = row["transcript_skipping_exon"]
+
+    upstream_start = int(row["upstream_exon_start"])
+    upstream_end = int(row["upstream_exon_end"])
+
+    skipped_start = int(row["skipped_exon_start"])
+    skipped_end = int(row["skipped_exon_end"])
+
+    downstream_start = int(row["downstream_exon_start"])
+    downstream_end = int(row["downstream_exon_end"])
+
+
+    # Get strand from the included transcript
+
+    tx_info = [
+        value
+        for key, value in junction_lookup.items()
+        if key[0] == tx_included
+    ]
+
+    if not tx_info:
+        continue
+
+    strand = tx_info[0]["strand"]
+    chromosome = tx_info[0]["chromosome"]
+
+
+    # ----------------------------------------------
+    # Determine junction coordinates
+    # ----------------------------------------------
+
+    if strand == "+":
+
+        j1 = (
+            tx_included,
+            upstream_end,
+            skipped_start
+        )
+
+        j2 = (
+            tx_included,
+            skipped_end,
+            downstream_start
+        )
+
+        j3 = (
+            tx_skipping,
+            upstream_end,
+            downstream_start
+        )
+
+    else:
+
+        j1 = (
+            tx_included,
+            upstream_start,
+            skipped_end
+        )
+
+        j2 = (
+            tx_included,
+            skipped_start,
+            downstream_end
+        )
+
+        j3 = (
+            tx_skipping,
+            upstream_start,
+            downstream_end
+        )
+
+
+    # ----------------------------------------------
+    # Store three junctions
+    # ----------------------------------------------
+
+    for role, junction in [
+        ("exon_entry", j1),
+        ("exon_exit", j2),
+        ("exon_skipping", j3)
+    ]:
+
+        transcript_id = junction[0]
+        donor = junction[1]
+        acceptor = junction[2]
+
+        records.append([
+            gene_id,
+            event_id,
+            role,
+            transcript_id,
+            chromosome,
+            strand,
+            donor,
+            acceptor
+        ])
+
+
+# --------------------------------------------------
+# Save output
+# --------------------------------------------------
+
+result = pd.DataFrame(
+    records,
+    columns=[
+        "gene_id",
+        "event_id",
+        "junction_role",
+        "transcript_id",
+        "chromosome",
+        "strand",
+        "donor",
+        "acceptor"
+    ]
+)
+
+result.to_csv(
+    output_file,
+    sep="\t",
+    index=False
+)
+
+print()
+print("====================================")
+print("EVENT-JUNCTION MAP COMPLETE")
+print("====================================")
+
+print("Event-junction rows:", len(result))
+
+print(
+    "Unique genes:",
+    result["gene_id"].nunique()
+)
+
+print(
+    "Unique junctions:",
+    result[
+        ["chromosome", "strand", "donor", "acceptor"]
+    ].drop_duplicates().shape[0]
+)
+
+print()
+print("Junction roles:")
+
+print(
+    result["junction_role"].value_counts()
+)
+
+print()
